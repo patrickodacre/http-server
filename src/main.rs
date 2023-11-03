@@ -1,5 +1,14 @@
+#![allow(unused)]
+mod error;
+mod prelude;
+mod utils;
+
+use prelude::*;
+use std::fs::DirEntry;
 use std::thread;
 mod response;
+mod server;
+use clap::{arg, Arg, ArgAction, Command, Parser};
 use response::*;
 use std::env;
 use std::fs;
@@ -9,26 +18,76 @@ use std::sync::Arc;
 use std::{format, io::BufRead, io::BufReader, io::Write, net::TcpListener};
 
 // TODO: Use Tokio
-fn main() -> std::io::Result<()> {
-    // TODO use Clap for args and default port, etc.
-    // Default port : 1337
-    // Default directory : "."
-    let args: Vec<String> = env::args().collect();
-    let mut directory = Some(PathBuf::from("."));
-    if args.len() > 2 && args[1] == "--directory" {
-        directory = Some(PathBuf::from(&args[2]));
-    }
+fn main() -> Result<()> {
+    let matches = Command::new("server")
+        .about(env!("CARGO_PKG_DESCRIPTION"))
+        .author(env!("CARGO_PKG_AUTHORS"))
+        .version(env!("CARGO_PKG_VERSION"))
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            Command::new("start")
+                .about("Start the server")
+                .arg(
+                    Arg::new("HOST")
+                        .short('H')
+                        .long("host")
+                        .action(ArgAction::Set)
+                        .value_name("HOST")
+                        .required(false)
+                        .default_value("127.0.0.1")
+                        .help("Choose a host"),
+                )
+                .arg(
+                    Arg::new("PORT")
+                        .short('P')
+                        .long("port")
+                        .action(ArgAction::Set)
+                        .value_name("PORT")
+                        .required(false)
+                        .default_value("4221")
+                        .help("Choose a port"),
+                )
+                .arg(
+                    Arg::new("DIR")
+                        .short('D')
+                        .long("dir")
+                        .action(ArgAction::Set)
+                        .value_name("DIR")
+                        .required(false)
+                        .default_value(".")
+                        .help("Choose a static file directory"),
+                ),
+        )
+        .get_matches();
 
-    let directory = directory.map(fs::canonicalize).and_then(Result::ok);
-    let directory = Arc::new(directory);
+    match matches.subcommand() {
+        Some(("start", set_matches)) => {
+            let host = set_matches.get_one::<String>("HOST").unwrap();
+            let port = set_matches.get_one::<String>("PORT").unwrap();
+            let directory = set_matches.get_one::<String>("DIR").unwrap();
+            let directory = Some(PathBuf::from(directory));
+            let directory = directory
+                .clone()
+                .map(fs::canonicalize)
+                .and_then(std::io::Result::ok);
 
-    let listener = TcpListener::bind("127.0.0.1:4221").expect("Failed to start server");
+            if directory.is_none() {
+                return Err(Error::Generic("DIR Doesn't exist".to_string()));
+            }
 
-    for stream in listener.incoming() {
-        let directory = directory.clone();
-        thread::spawn(move || {
-            handle_stream(stream, directory);
-        });
+            let mut s = server::Server::new(host, port);
+            let listener = s.start();
+
+            for stream in listener.incoming() {
+                let directory = Arc::new(directory.clone());
+
+                thread::spawn(move || {
+                    handle_stream(stream, directory);
+                });
+            }
+        }
+        _ => {}
     }
 
     fn handle_stream(
